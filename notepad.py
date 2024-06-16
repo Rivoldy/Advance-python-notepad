@@ -1,4 +1,5 @@
 import os
+import threading
 import pyautogui
 from gtts import gTTS
 from tkinter import *
@@ -8,11 +9,12 @@ from tkinter.simpledialog import askstring
 from tkinter.scrolledtext import ScrolledText
 import tkinter.font as tkFont
 from PIL import Image, ImageTk
-from pygments import lex
-from pygments.lexers import PythonLexer
+from pygments import lex, highlight
+from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.styles import get_style_by_name
-from pygments.token import Token
+from pygments.formatters import HtmlFormatter
 import playsound
+import keyword
 
 def newFile():
     global file
@@ -40,6 +42,7 @@ def openFile():
         else:
             with open(file, "r") as f:
                 TextArea.insert(1.0, f.read())
+        highlight_syntax()
 
 def saveFile():
     global file
@@ -77,6 +80,7 @@ def copy():
 
 def paste():
     TextArea.event_generate("<<Paste>>")
+    highlight_syntax()
 
 def undo():
     TextArea.event_generate("<<Undo>>")
@@ -128,6 +132,7 @@ def change_font():
         selected_font = font_family.get()
         selected_size = font_size.get()
         TextArea.config(font=(selected_font, selected_size))
+        highlight_syntax()
 
     font_window = Toplevel(root)
     font_window.title("Font")
@@ -152,6 +157,7 @@ def toggle_theme():
     new_bg = "black" if current_bg == "white" else "white"
     new_fg = "white" if new_bg == "black" else "black"
     TextArea.config(bg=new_bg, fg=new_fg, insertbackground=new_fg)
+    highlight_syntax()
 
 def autocomplete(event):
     current_text = TextArea.get("insert linestart", "insert")
@@ -173,26 +179,24 @@ def auto_save():
     root.after(300000, auto_save)  # Save every 5 minutes
 
 def highlight_syntax(event=None):
-    TextArea.tag_remove("Token.Keyword", "1.0", END)
-    TextArea.tag_remove("Token.Name.Builtin", "1.0", END)
-    TextArea.tag_remove("Token.String", "1.0", END)
-    TextArea.tag_remove("Token.Comment", "1.0", END)
-
     content = TextArea.get("1.0", END)
-    for token, content in lex(content, PythonLexer()):
-        start = "1.0"
-        while True:
-            start = TextArea.search(content, start, stopindex=END)
-            if not start:
-                break
-            end = f"{start}+{len(content)}c"
-            try:
-                TextArea.tag_add(str(token), start, end)
-            except TclError:
-                # Use a default color if the specified color is not valid
-                TextArea.tag_add(str(token), start, end)
-                TextArea.tag_config(str(token), foreground="#000000")
-            start = end
+    TextArea.mark_set("range_start", "1.0")
+
+    for tag in TextArea.tag_names():
+        TextArea.tag_delete(tag)
+
+    try:
+        lexer = guess_lexer(content)
+    except:
+        lexer = get_lexer_by_name("text")
+
+    tokens = list(lex(content, lexer))
+
+    for token_type, token_string in tokens:
+        start = TextArea.index("range_start")
+        end = f"{start}+{len(token_string)}c"
+        TextArea.mark_set("range_start", end)
+        TextArea.tag_add(str(token_type), start, end)
 
     style = get_style_by_name("default")
     for token, style_def in style:
@@ -200,7 +204,6 @@ def highlight_syntax(event=None):
             try:
                 TextArea.tag_config(str(token), foreground=style_def["color"])
             except TclError:
-                # Use a default color if the specified color is not valid
                 TextArea.tag_config(str(token), foreground="#000000")
 
 def take_screenshot():
@@ -211,15 +214,48 @@ def take_screenshot():
         screenshot.save(file)
         showinfo("Screenshot", f"Screenshot saved as {file}")
 
-def text_to_speech():
+def show_language_dialog():
+    language_dialog = Toplevel(root)
+    language_dialog.title("Select Language for Text-to-Speech")
+    language_dialog.geometry("300x200")
+
+    Label(language_dialog, text="Select Language:").pack(pady=10)
+
+    language_var = StringVar(language_dialog)
+    language_var.set("en")  # default value
+    full_languages = {
+        "Afrikaans": "af", "Albanian": "sq", "Arabic": "ar", "Armenian": "hy", "Bengali": "bn", "Bosnian": "bs",
+        "Catalan": "ca", "Croatian": "hr", "Czech": "cs", "Danish": "da", "Dutch": "nl", "English": "en", "Esperanto": "eo",
+        "Estonian": "et", "Filipino": "tl", "Finnish": "fi", "French": "fr", "German": "de", "Greek": "el", "Gujarati": "gu",
+        "Hindi": "hi", "Hungarian": "hu", "Icelandic": "is", "Indonesian": "id", "Italian": "it", "Japanese": "ja", "Javanese": "jw",
+        "Kannada": "kn", "Khmer": "km", "Korean": "ko", "Latin": "la", "Latvian": "lv", "Lithuanian": "lt", "Macedonian": "mk",
+        "Malayalam": "ml", "Marathi": "mr", "Myanmar (Burmese)": "my", "Nepali": "ne", "Norwegian": "no", "Polish": "pl",
+        "Portuguese": "pt", "Punjabi": "pa", "Romanian": "ro", "Russian": "ru", "Serbian": "sr", "Sinhala": "si", "Slovak": "sk",
+        "Spanish": "es", "Sundanese": "su", "Swahili": "sw", "Swedish": "sv", "Tamil": "ta", "Telugu": "te", "Thai": "th",
+        "Turkish": "tr", "Ukrainian": "uk", "Urdu": "ur", "Vietnamese": "vi", "Welsh": "cy", "Xhosa": "xh", "Yiddish": "yi", "Zulu": "zu"
+    }
+
+    language_list = sorted(full_languages.keys())
+    language_menu = OptionMenu(language_dialog, language_var, *language_list)
+    language_menu.pack(pady=10)
+
+    def set_language():
+        selected_language = language_var.get()
+        language_id = full_languages[selected_language]
+        language_var.set(language_id)
+        tts_thread = threading.Thread(target=lambda: text_to_speech(language_id))
+        tts_thread.start()
+        language_dialog.destroy()
+
+    Button(language_dialog, text="OK", command=set_language).pack(pady=10)
+
+def text_to_speech(language):
     text = TextArea.get(1.0, END)
-    language = askstring("Language", "Enter language (e.g., 'en' for English, 'id' for Indonesian):")
-    if not language:
-        language = "en"
     try:
         tts = gTTS(text=text, lang=language)
-        tts.save("output.mp3")
-        playsound.playsound("output.mp3")
+        output_file = f"{language}_output.mp3"
+        tts.save(output_file)
+        playsound.playsound(output_file)
     except ValueError as e:
         showerror("Language Error", str(e))
 
@@ -274,7 +310,7 @@ if __name__ == '__main__':
     ToolsMenu = Menu(MenuBar, tearoff=0)
     ToolsMenu.add_command(label="Word Count", command=word_count)
     ToolsMenu.add_command(label="Take Screenshot", command=take_screenshot)
-    ToolsMenu.add_command(label="Text to Speech", command=text_to_speech)
+    ToolsMenu.add_command(label="Text to Speech", command=show_language_dialog)
     MenuBar.add_cascade(label="Tools", menu=ToolsMenu)
 
     # Help Menu
