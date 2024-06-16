@@ -1,0 +1,6 @@
+tk
+pyautogui
+gtts
+Pillow
+pygments
+playsound==1.2.2
